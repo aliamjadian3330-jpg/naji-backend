@@ -1,0 +1,7 @@
+﻿const towUser = JSON.parse(localStorage.getItem('towUser'));
+if(!towUser){
+  alert('ابتدا وارد شوید');
+  window.location.href = 'tow-login.html';
+} else {
+  document.getElementById('welcome').innerText = `خوش آمدید، ${towUser.fullName}`;
+}

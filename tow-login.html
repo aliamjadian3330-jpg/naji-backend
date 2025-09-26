@@ -1,0 +1,20 @@
+﻿$('#loginForm').on('submit', function(e){
+  e.preventDefault();
+  const data = {
+    nationalId: $('#nationalId').val(),
+    password: $('#password').val()
+  };
+  fetch("http://localhost:5000/api/tow/login",{
+    method:"POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify(data)
+  })
+  .then(res=>res.json())
+  .then(res=>{
+    if(res.towId){
+      localStorage.setItem("towId", res.towId);
+      window.location.href="tow-dashboard.html";
+    } else alert(res.message);
+  })
+  .catch(err=>alert("خطا در ورود"));
+});

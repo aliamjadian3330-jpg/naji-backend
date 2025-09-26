@@ -1,0 +1,36 @@
+﻿$('#towForm').on('submit', function(e){
+  e.preventDefault();
+  let valid = true;
+
+  if($('#fullname').val().trim().length < 3){ valid=false; $('#errFullname').show(); } else { $('#errFullname').hide(); }
+  if(!$('#birthdate').val()){ valid=false; $('#errBirthdate').show(); } else { $('#errBirthdate').hide(); }
+  if(!/^\d{10}$/.test($('#nationalId').val())){ valid=false; $('#errNationalId').show(); } else { $('#errNationalId').hide(); }
+  if($('#password').val() !== $('#confirmPassword').val()){ valid=false; $('#errPassword').show(); } else { $('#errPassword').hide(); }
+
+  if(valid){
+    const data = {
+      fullname: $('#fullname').val(),
+      birthdate: $('#birthdate').val(),
+      nationalId: $('#nationalId').val(),
+      towType: $('#towType').val(),
+      towModel: $('#towModel').val(),
+      plateNumber: $('#plateNumber').val(),
+      phone: $('#phone').val(),
+      password: $('#password').val()
+    };
+
+    fetch("http://localhost:5000/api/tow/signup",{
+      method:"POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify(data)
+    })
+    .then(res=>res.json())
+    .then(res=>{
+      alert(res.message);
+      if(res.message.includes("موفق")){
+        window.location.href="tow-login.html";
+      }
+    })
+    .catch(err=>alert("خطا در ثبت‌نام"));
+  }
+});
