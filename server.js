@@ -382,19 +382,6 @@ app.post("/api/tow/forgot-password", async (req, res) => {
     res.status(500).json({ message: "خطا در بازیابی رمز یدک‌کش" });
   }
 });
-// tv
-io.to(request.driverSocketId).emit('requestUpdate', { 
-  requestId, 
-  status: 'accepted', 
-  towId: socket.id, 
-  towInfo, 
-  towLocation: tows.get(socket.id)?.location || null
-});
-// tv/tow
-if(request.assignedTow){
-  io.to(request.assignedTow).emit('updateDriverLocation', data);
-}
-
 
 
 // اجرای سرور
