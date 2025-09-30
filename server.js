@@ -1,11 +1,7 @@
-﻿const express = require("express");
+const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
-const mongoose = require("mongoose");
 const cors = require("cors");
-const dotenv = require("dotenv");
-
-dotenv.config();
 
 const app = express();
 app.use(cors());
@@ -14,57 +10,50 @@ app.use(express.json());
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
-// MongoDB Models
-mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log("✅ MongoDB connected"))
-  .catch(err => console.error(err));
+// ذخیره یدک‌کش‌ها و راننده‌ها
+const tows = new Map();    // towId => { socketId, info, location }
+const drivers = new Map(); // driverId => { socketId, info, location }
 
-const driverSchema = new mongoose.Schema({
-  fullName: String,
-  phone: String,
-  licensePlate: String,
-  password: String,
-});
-const Driver = mongoose.model("Driver", driverSchema);
+// مدیریت درخواست‌ها
+const requests = new Map(); // requestId => { driverId, origin, dest, status, assignedTow, timeout }
 
-const towSchema = new mongoose.Schema({
-  fullName: String,
-  phone: String,
-  plateNumber: String,
-  image: String,
-  password: String,
-});
-const Tow = mongoose.model("Tow", towSchema);
-
-// --- Data structures ---
-const tows = new Map(); // socketId => { location, info }
-const requests = new Map(); // requestId => { driverSocketId, origin, dest, status, assignedTow, timeout }
-
-// Timeout 30 ثانیه
 const REQUEST_TIMEOUT_MS = 30000;
 
 function generateRequestId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2,8);
 }
 
-function haversineDistance(loc1, loc2){
+function haversineDistance(loc1, loc2) {
   if(!loc1 || !loc2) return Infinity;
-  const R=6371, dLat=(loc2.lat-loc1.lat)*Math.PI/180, dLon=(loc2.lng-loc1.lng)*Math.PI/180;
-  const a = Math.sin(dLat/2)**2 + Math.cos(loc1.lat*Math.PI/180)*Math.cos(loc2.lat*Math.PI/180)*Math.sin(dLon/2)**2;
-  return R * 2 * Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+  const R = 6371;
+  const dLat = (loc2.lat - loc1.lat) * Math.PI / 180;
+  const dLon = (loc2.lng - loc1.lng) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 +
+            Math.cos(loc1.lat * Math.PI/180) *
+            Math.cos(loc2.lat * Math.PI/180) *
+            Math.sin(dLon/2)**2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
 }
 
-// --- Socket.IO ---
 io.on("connection", socket => {
-  console.log("🔗 متصل شد:", socket.id);
+  console.log("✅ متصل شد:", socket.id);
 
   // ثبت یدک‌کش
-  socket.on("registerTow", (info={}) => {
-    tows.set(socket.id, { socketId: socket.id, location: null, info });
-    console.log("یدک‌کش ثبت شد:", socket.id, info);
+  socket.on("registerTow", () => {
+    tows.set(socket.id, { socketId: socket.id, info: {}, location: null });
+    console.log("یدک‌کش ثبت شد:", socket.id);
   });
 
-  // بروزرسانی موقعیت یدک‌کش
+  socket.on("towInfo", info => {
+    if(tows.has(socket.id)){
+      const tow = tows.get(socket.id);
+      tow.info = info;
+      tows.set(socket.id, tow);
+      console.log("اطلاعات یدک‌کش ذخیره شد:", info);
+    }
+  });
+
   socket.on("updateTowLocation", loc => {
     if(tows.has(socket.id)){
       const tow = tows.get(socket.id);
@@ -73,107 +62,124 @@ io.on("connection", socket => {
     }
   });
 
+  // ثبت راننده
+  socket.on("registerDriver", info => {
+    drivers.set(socket.id, { socketId: socket.id, info, location: null });
+    console.log("راننده ثبت شد:", info);
+  });
+
+  socket.on("updateDriverLocation", loc => {
+    if(drivers.has(socket.id)){
+      const d = drivers.get(socket.id);
+      d.location = loc;
+      drivers.set(socket.id, d);
+
+      // ارسال موقعیت راننده به تمام یدک‌کش‌ها
+      tows.forEach(tow => {
+        io.to(tow.socketId).emit("updateDriverLocation", { driverId: socket.id, lat: loc.lat, lng: loc.lng });
+      });
+    }
+  });
+
   // راننده درخواست سرویس
   socket.on("requestService", data => {
-    const { origin, dest, driverInfo } = data;
     const requestId = generateRequestId();
     const request = {
       requestId,
       driverSocketId: socket.id,
-      origin, dest,
+      origin: data.origin,
+      dest: data.dest,
       status: "pending",
       assignedTow: null,
       timeout: null,
-      driverInfo
+      driverInfo: data.driverInfo
     };
 
-    // Timeout
+    // timeout
     request.timeout = setTimeout(() => {
-      const r = requests.get(requestId);
-      if(r && r.status === "pending"){
-        r.status = "expired";
+      if(requests.has(requestId) && requests.get(requestId).status === "pending"){
+        io.to(socket.id).emit("requestUpdate", { requestId, status: "expired" });
         requests.delete(requestId);
-        io.to(r.driverSocketId).emit("requestUpdate",{ requestId, status:"expired" });
       }
     }, REQUEST_TIMEOUT_MS);
 
     requests.set(requestId, request);
 
-    // نزدیک‌ترین یدک‌کش‌ها
-    const allTows = Array.from(tows.values()).filter(t => t.location);
-    allTows.sort((a,b)=> haversineDistance(a.location, origin) - haversineDistance(b.location, origin));
-    const targets = allTows.slice(0,3);
-
+    // ارسال درخواست به نزدیک‌ترین 3 یدک‌کش
+    const availableTows = Array.from(tows.values()).filter(t => t.location);
+    availableTows.sort((a,b) => haversineDistance(a.location, data.origin) - haversineDistance(b.location, data.origin));
+    const targets = availableTows.slice(0,3);
     targets.forEach(tow => {
-      io.to(tow.socketId).emit("receiveRequest", { requestId, driverSocketId: socket.id, origin, dest, driverInfo });
+      io.to(tow.socketId).emit("receiveRequest", {
+        requestId,
+        origin: data.origin,
+        dest: data.dest,
+        driverInfo: data.driverInfo
+      });
     });
 
-    io.to(socket.id).emit("requestCreated", { requestId, status:"pending" });
+    io.to(socket.id).emit("requestCreated", { requestId, status: "pending" });
   });
 
-  // پاسخ یدک‌کش
-  socket.on("requestUpdate", data => {
-    const { requestId, status, towInfo } = data;
+  // یدک‌کش پاسخ می‌دهد
+  socket.on("requestUpdate", ({ requestId, status, towInfo }) => {
+    if(!requests.has(requestId)) {
+      socket.emit("requestClosed", { requestId, message: "درخواست موجود نیست" });
+      return;
+    }
     const request = requests.get(requestId);
-    if(!request) return socket.emit("requestClosed",{ requestId, message:"درخواست موجود نیست یا منقضی شده." });
+    if(request.status !== "pending") return;
 
-    if(status === "accepted" && request.status === "pending"){
-      request.status="accepted"; request.assignedTow = socket.id; clearTimeout(request.timeout);
-      request.towInfo = towInfo || (tows.get(socket.id)?.info || {});
+    if(status === "accepted"){
+      request.status = "accepted";
+      request.assignedTow = socket.id;
+      if(towInfo) request.towInfo = towInfo;
+      clearTimeout(request.timeout);
       requests.set(requestId, request);
 
-      // اطلاع راننده
+      // اطلاع به راننده
       io.to(request.driverSocketId).emit("requestUpdate", {
         requestId,
-        status:"accepted",
-        towId: socket.id,
+        status: "accepted",
         towInfo: request.towInfo,
-        towLocation: tows.get(socket.id)?.location || null
+        towLocation: tows.get(socket.id)?.location
       });
 
-      // اطلاع سایر یدک‌کش‌ها
-      tows.forEach(tow=>{
+      // اطلاع به بقیه یدک‌کش‌ها
+      tows.forEach(tow => {
         if(tow.socketId !== socket.id){
-          io.to(tow.socketId).emit("requestClosed", { requestId, message:"این درخواست توسط یدک‌کش دیگری پذیرفته شد." });
+          io.to(tow.socketId).emit("requestClosed", { requestId, message: "درخواست توسط یدک‌کش دیگر پذیرفته شد" });
         }
       });
-    } else if(status==="rejected"){
-      io.to(request.driverSocketId).emit("requestUpdate",{ requestId, status:"rejected", towId: socket.id });
+    } else if(status === "rejected"){
+      io.to(request.driverSocketId).emit("requestUpdate", { requestId, status: "rejected" });
     }
   });
 
-  // موقعیت زنده راننده
-  socket.on("driverLocation", data=>{
-    tows.forEach(tow=>{
-      io.to(tow.socketId).emit("updateDriverLocation", data);
-    });
-  });
-
-  socket.on("endTrip", ({requestId})=>{
-    const req = requests.get(requestId);
-    if(req){
-      io.to(req.driverSocketId).emit("tripEnded",{ requestId });
-      if(req.assignedTow) io.to(req.assignedTow).emit("tripEnded",{ requestId });
+  socket.on("endTrip", ({ requestId }) => {
+    if(requests.has(requestId)){
+      const r = requests.get(requestId);
+      io.to(r.driverSocketId).emit("tripEnded", { requestId });
+      if(r.assignedTow) io.to(r.assignedTow).emit("tripEnded", { requestId });
       requests.delete(requestId);
     }
   });
 
-  socket.on("cancelTrip", ({requestId})=>{
-    const req = requests.get(requestId);
-    if(req){
-      io.to(req.driverSocketId).emit("tripCanceled",{ requestId });
-      if(req.assignedTow) io.to(req.assignedTow).emit("tripCanceled",{ requestId });
+  socket.on("cancelTrip", ({ requestId }) => {
+    if(requests.has(requestId)){
+      const r = requests.get(requestId);
+      io.to(r.driverSocketId).emit("tripCanceled", { requestId });
+      if(r.assignedTow) io.to(r.assignedTow).emit("tripCanceled", { requestId });
       requests.delete(requestId);
     }
   });
 
   socket.on("disconnect", () => {
     tows.delete(socket.id);
-    console.log("❌ قطع اتصال:", socket.id);
+    drivers.delete(socket.id);
+    console.log("❌ کاربر قطع شد:", socket.id);
   });
 });
 
-// --- روت‌های ساده راننده و یدک‌کش ---
-app.get("/", (req,res)=>res.send("Server Running"));
-const PORT=process.env.PORT||5000;
-server.listen(PORT,()=>console.log(`🚀 Server on port ${PORT}`));
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
