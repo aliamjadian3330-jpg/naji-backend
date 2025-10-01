@@ -11,9 +11,6 @@ const dotenv = require("dotenv");
 
 // const tows = new Set(); // قديمي
 const tows = new Map(); // towId => { socketId, location }
-const drivers = new Map(); // driverId => socket.id
-
-const driverInfo = new Map(); // driverId => { fullName, phone, carModel, carType }
 
 // جلوگيري از قبول همزمان يک درخواست توسط چند يدک‌کش
 const acceptedRequests = new Map(); // requestId => towId
@@ -48,7 +45,6 @@ const io = new Server(server, {
 
 io.on("connection", (socket) => {
   console.log("يک يدک‌کش يا راننده متصل شد:", socket.id);
-  
   
 // 222222222222222222222222222222222222222222222222222
 socket.on('endTrip', ({ requestId }) => {
