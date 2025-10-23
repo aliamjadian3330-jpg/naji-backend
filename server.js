@@ -83,34 +83,32 @@ const logger = winston.createLogger({
 });
 
 // ---------- Mongoose models ----------
+// مدل راننده (Driver)
 const driverSchema = new mongoose.Schema({
-  fullName: String,
-  birthDate: String,
-  nationalId: { type: String, unique: true, index: true },
-  licensePlate: String,
-  phone: String,
-  carType: String,
-  carColor: String,
-  carModel: String,
-  password: String
-}, { timestamps: true });
+  fullName: { type: String, required: true },
+  phone: { type: String, required: true },
+  carType: { type: String, required: true },
+  carModel: { type: String, required: true },
+  carColor: { type: String },
+  plate: { type: String },
+  image: { type: String }, // optional
+  password: { type: String, required: true } 
+});
+
 const Driver = mongoose.model('Driver', driverSchema);
 
+// مدل یدک‌کش (Tow)
 const towSchema = new mongoose.Schema({
-  fullName: String,
-  birthDate: String,
-  nationalId: { type: String, unique: true, index: true },
-  towType: String,
-  towModel: String,
-  plateNumber: String,
-  phone: String,
-  password: String,
-  location: { lat: Number, lng: Number },
+  fullName: { type: String, required: true },
+  phone: { type: String, required: true },
+  carType: { type: String, required: true },
+  carModel: { type: String, required: true },
+  password: { type: String, required: true }, // برای login
   refreshTokenHash: String // برای ذخیره refresh token امن
 }, { timestamps: true });
 const Tow = mongoose.model('Tow', towSchema);
 
-// Optional collection for global refresh blacklist (if not using Redis)
+// Optional: blacklist توکن‌ها (همانند قبل)
 const tokenBlacklistSchema = new mongoose.Schema({
   jti: { type: String, index: true },
   expiresAt: { type: Date, index: { expireAfterSeconds: 0 } }
@@ -171,23 +169,53 @@ async function authMiddleware(req, res, next) {
     return res.status(401).json({ message: 'Invalid token' });
   }
 }
-
 // ---------- INPUT VALIDATION (Joi) ----------
 const signupSchema = Joi.object({
   fullName: Joi.string().min(2).max(100).required(),
   nationalId: Joi.string().min(3).max(50).required(),
   phone: Joi.string().min(5).max(30).required(),
+  carType: Joi.string().required(),
+  carModel: Joi.string().required(),
+  carColor: Joi.string().allow('', null),
+  plate: Joi.string().allow('', null),
+  image: Joi.string().allow('', null),
   password: Joi.string().min(8).max(128).required()
 });
-function validate(schema) {
-  return (req, res, next) => {
-    const { error } = schema.validate(req.body);
-    if (error) return res.status(400).json({ message: error.details[0].message });
-    next();
-  }
-}
 
 // ---------- HTTP ROUTES (Auth, Tow update) ----------
+
+// Driver signup
+app.post('/api/drivers/signup', authLimiter, validate(signupSchema), async (req, res) => {
+  try {
+    // ← اینجا تغییر می‌کنیم
+    const { password, licensePlate, ...rest } = req.body;  // destructure فرم
+    const hashed = await hashPassword(password);
+
+    // این خط را اضافه کن:
+    const driver = new Driver({ ...rest, plate: licensePlate, password: hashed });
+
+    await driver.save();
+
+    // emit اطلاعات کامل برای داشبورد
+    const dashData = {
+      id: driver._id.toString(),
+      fullName: driver.fullName,
+      phone: driver.phone,
+      carType: driver.carType,
+      carModel: driver.carModel,
+      carColor: driver.carColor || '-',
+      plate: driver.licensePlate || '-',   // حالا مقدار plate درست ارسال می‌شود
+      image: driver.image || ''
+    };
+    io.emit('newDriverRegistered', dashData);
+
+    res.status(201).json({ message: 'Driver registered' });
+  } catch (err) {
+    logger.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 
 // Tow signup
 app.post('/api/tow/signup', authLimiter, validate(signupSchema), async (req, res) => {
@@ -196,13 +224,26 @@ app.post('/api/tow/signup', authLimiter, validate(signupSchema), async (req, res
     const hashed = await hashPassword(password);
     const tow = new Tow({ ...rest, password: hashed });
     await tow.save();
+
+    // emit فقط فیلدهای مورد نیاز برای داشبورد
+    const dashData = {
+      id: tow._id.toString(),
+      fullName: tow.fullName,
+      phone: tow.phone,
+      carType: tow.carType || '-',
+      carModel: tow.carModel || '-',
+      carColor: tow.carColor || '-',
+      plate: tow.plate || '-',
+      image: tow.image || ''
+    };
+    io.emit('newTowRegistered', dashData);
+
     res.status(201).json({ message: 'Tow registered' });
   } catch (err) {
     logger.error(err);
     res.status(500).json({ message: 'Server error' });
   }
 });
-
 // Tow login -> returns access + refresh tokens (refresh stored hashed)
 app.post('/api/tow/login', authLimiter, async (req, res) => {
   try {
